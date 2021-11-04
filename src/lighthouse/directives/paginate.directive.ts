@@ -174,7 +174,7 @@ enum PaginateType {
                 },
                 edges: {
                     description: `A list of ${fieldTypeName} edges.`,
-                    type: GraphQLList(edgeType)
+                    type: new GraphQLList(edgeType)
                 }
             }
         });

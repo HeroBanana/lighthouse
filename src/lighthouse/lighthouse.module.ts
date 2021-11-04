@@ -1,4 +1,4 @@
-import {Module} from '@nestjs/common';
+import {Module, Inject} from '@nestjs/common';
 import {DynamicModule, OnModuleDestroy, OnModuleInit} from '@nestjs/common/interfaces';
 import {loadPackage} from '@nestjs/common/utils/load-package.util';
 
@@ -12,14 +12,19 @@ import type {ApolloServerFastifyConfig} from "apollo-server-fastify";
 
 import {makeExecutableSchema} from "@graphql-tools/schema";
 
+import type {LighthouseModuleOptions} from "./interfaces/lighthouse-module-options.interface";
+
 import {BaseDirective} from "./directives/base.directive";
 import {DeprecatedDirective} from './directives/deprecated.directive';
 import {GuardDirective} from "./directives/guard.directive";
 import {UpperCaseDirective} from "./directives/upper-case.directive";
 import {PaginateDirective} from "./directives/paginate.directive";
 
-import {LighthouseExplorer} from "./lighthouse.explorer";
 import {LoaderRegistry} from "./loaders/loader.registry";
+
+import {LighthouseExplorer} from "./lighthouse.explorer";
+
+import {LIGHTHOUSE_MODULE_OPTIONS} from './lighthouse.constants';
 
 const APOLLO_FASTIFY_PACKAGE = 'apollo-server-fastify';
 const APOLLO_EXPRESS_PACKAGE = 'apollo-server-express';
@@ -39,16 +44,22 @@ export class LighthouseModule implements OnModuleInit, OnModuleDestroy {
     private internalApolloServer: ApolloServerBase;
 
     public constructor(
+        @Inject(LIGHTHOUSE_MODULE_OPTIONS) private readonly options: LighthouseModuleOptions,
         private readonly httpAdapterHost: HttpAdapterHost,
         private readonly applicationConfig: ApplicationConfig,
         private readonly explorer: LighthouseExplorer,
     ) {
     }
 
-    static forRoot(): DynamicModule {
+    static forRoot(options: LighthouseModuleOptions = {}): DynamicModule {
         return {
             module: LighthouseModule,
-            providers: [],
+            providers: [
+                {
+                    provide: LIGHTHOUSE_MODULE_OPTIONS,
+                    useValue: options,
+                },
+            ],
         };
     }
 
@@ -145,16 +156,20 @@ export class LighthouseModule implements OnModuleInit, OnModuleDestroy {
 
         this.explorer.init();
 
-        // Get all registered directives.
+        const {transformSchema, transformDirectives} = this.options;
+
         const directives = this.explorer.directives();
 
+        // Get all registered directives.
+        const transformedDirectives = transformDirectives ? await transformDirectives(directives) : directives;
+
         // Get all SDL directive definitions.
-        const directivesTypeDefs = directives.map(
+        const directivesTypeDefs = transformedDirectives.map(
             (instance) => instance.definition()
         );
 
         // Get and build directive schema mappers.
-        const directivesSchemaMappers = directives.map(
+        const directivesSchemaMappers = transformedDirectives.map(
             (instance) => this.buildSchemaMapper(instance)
         );
 
@@ -172,7 +187,7 @@ export class LighthouseModule implements OnModuleInit, OnModuleDestroy {
                   valid: String @upperCase
                   secured: String 
                   invalid: String @deprecated(reason: "I'm deprecated...")
-                  usersA: [User] @paginate(type: CONNECTION, maxCount: 2) 
+                  usersA: [User] @paginate 
                   usersB: [User] @paginate 
                 }
               `
@@ -185,10 +200,13 @@ export class LighthouseModule implements OnModuleInit, OnModuleDestroy {
         });
 
         // Reduce schema with directive transformers.
-        const schema = directivesSchemaMappers.reduceRight((
+        const schemaWithDirectives = directivesSchemaMappers.reduceRight((
             prev,
             next
         ) => mapSchema(prev, next), executableSchema);
+
+        //  Transform schema if defined in
+        const schema = transformSchema ? await transformSchema(schemaWithDirectives) : schemaWithDirectives;
 
         // Create shareable apollo config
         const config: ApolloServerExpressConfig | ApolloServerFastifyConfig = {
